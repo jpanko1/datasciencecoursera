@@ -1,0 +1,183 @@
+A Predictive Model for an Exercise Motion Study
+========================================================
+
+To develop devices capable of warning someone that they are performing an exercise incorrectly, sensors were placed on test subjects and on their exercise equipment to record measurements of their motion while they performed exercises with and without proper form.  The data collected from this study, described at http://groupware.les.inf.puc-rio.br/har , will be used here to develop a predictive model that can identify motions that indicate improper form during exercise.
+
+The subjects performed exercises in five different ways, described in the dataset's "classe" variable by the values A, B, C, D, and E.  The dataset contains 159 predictor variables.  The training data consists of 19,622 observations.
+
+### Prepare the Data
+
+Load the training data and partition it into a training subset and a testing subset.
+
+```{r message=FALSE}
+library(caret)
+data <- read.csv( "pml-training.csv" )
+dataDim <- dim( data )
+inTrain <- createDataPartition( y=data$classe , p=0.7 , list=FALSE )
+training <- data[inTrain,]
+testing <- data[-inTrain,]
+rm( data , inTrain )
+dataDim
+```
+
+
+Clean the training data.
+
+```{r}
+# Identify columns containing a lot of NA values
+NAcols <- sapply( training , function(c) mean( is.na( c ) ) )
+
+# Printing and inspecting NAcols showed that each column has either no NA or over 97% NA
+# Instead of printing the complete contents of NAcols here, demonstrate with an equation
+length( NAcols ) == length( NAcols[NAcols==0] ) + length( NAcols[NAcols>0.97] )
+
+# Keep only the columns that contain no NA
+trainingCleanNA <- training[, NAcols==0]
+rm( NAcols )
+
+# Perform the same kind of steps for blank values
+blankCols <- sapply( trainingCleanNA , function(c) mean( c=="" ) )
+
+# Also for blanks, each column has either no blanks or over 97% blanks
+length( blankCols ) == length( blankCols[blankCols==0] ) + length( blankCols[blankCols>0.97] )
+
+# Keep the columns that contain no blank values
+trainingClean_NA_Blank <- trainingCleanNA[, blankCols==0]
+rm( blankCols , trainingCleanNA )
+
+# summary(trainingClean_NA_Blank) shows clean data (not printing summary here to save space)
+# Replace training variable with clean data
+training <- trainingClean_NA_Blank
+rm( trainingClean_NA_Blank )
+```
+
+### Fit the Models
+
+According to this course's lectures, random forest and boosting have been found to be among the best performing models in data science competitions.  I will start by fitting a model using random forest.
+
+Model fitting is run with this command:
+
+> modRF <- train( classe ~ . , data=training , method="rf" , trControl=trainControl( method="cv" , number=3 ) )
+
+With the fitted model, varImp( modRF ) is run to determine which variables are the most important in the model.  Unnecessary variables can be removed from the model.
+
+The results of varImp show that the most important variable in the model is "X".  However, analyzing the training data shows that X is just a row counter and the reason it is such a good predictor is that the values of classe are intentionally ordered, so as X increases, classe increases.  In fact, certain ranges of X correspond to certain values of classe; see plot below.  X is an artificial variable and will be removed.
+
+```{r echo=FALSE, fig.align='center', fig.width=6, fig.height=6}
+qplot( X , classe , data=training )
+```
+
+Timestamp variables will also be removed.  Date and time of the exercise are unrelated to the motions of the body being studied.  Also, the output of varImp showed that covariates had been created from one of the timestamp variables.  Removing the timestamps will prevent creation of unnecessary covariates.
+
+```{r}
+# Remove column X and timestamp columns
+nm <- names( training )
+nm <- nm[ nm!="X" ]
+nm <- nm[ grep( "timestamp" , nm , invert=T ) ]
+training2 <- training[ nm ]
+```
+
+The random forest model fitting is run again using the training2 data and assigning the fitted model to modRF2.
+
+Running varImp( modRF2 ) shows that the most important variable is num_window.  Although I could not find a description of the variables online, I assume num_window and new_window are artifacts of the study setup unrelated to the subject's motion, so these variables will be removed.
+
+The user_name variable will be removed because it is unrelated to the subject's motion.  A plot of user_name versus classe shows that classe is fairly evenly spread across users and also it is not in varImp's top 20 predictors, so it does not seem to be a useful predictor.
+
+```{r echo=FALSE, fig.align='center', fig.width=6, fig.height=6}
+plot( training$user_name , training$classe , xlab="user_name" , ylab="classe" )
+```
+```{r}
+# Remove window and user_name columns
+nm <- nm[ grep( "window" , nm , invert=T ) ]
+nm <- nm[ nm!="user_name" ]
+training3 <- training2[ nm ]
+```
+
+The random forest fitting is run again using training3.
+
+The accuracy levels given by the output of the fitted models were about 99.98% for modRF, 99.59% for modRF2, and 98.83% for modRF3.  The first two models will be ignored because they contained variables unrelated to the subject's motion and the variables may have caused overfitting.  The in-sample accuracy estimate of the third model is acceptable, and it contains only variables related to the subject's motion.  The in-sample error rate for the third model is 1 - accuracy, which works out to 1.17%.
+
+Output of the chosen fitted model:
+
+>  Random Forest 
+>  
+>  13737 samples
+>
+>  52 predictor
+>
+>  5 classes: 'A', 'B', 'C', 'D', 'E'
+>
+>  
+>  No pre-processing
+>
+>  Resampling: Cross-Validated (3 fold) 
+>  
+>  Summary of sample sizes: 9157, 9159, 9158 
+>  
+>  Resampling results across tuning parameters:
+>  
+    mtry  Accuracy   Kappa      Accuracy SD  Kappa SD   
+     2    0.9882799  0.9851707  0.001031577  0.001304941
+    27    0.9877700  0.9845268  0.001942787  0.002455807
+    52    0.9812912  0.9763299  0.004315754  0.005457838
+>  
+>  Accuracy was used to select the optimal model using  the largest value.
+>
+>  The final value used for the model was mtry = 2.
+
+### Generate the Predictions and Estimate the Model's Out Of Sample Error
+
+The predictions are created from the testing data using this command:
+
+> predRF3 <- predict( modRF3 , testing )
+
+A confusion matrix is run to estimate the out of sample error:
+
+> confusionMatrix( predRF3 , testing$classe )
+
+The predictions are compared against the actual outcomes in the testing data.
+
+The accuracy calculated by the confusion matrix is 99.3% which equates to an out of sample error estimate of 0.7%.  The out of sample error is usually expected to be greater than the in-sample error, but this time it's not.
+
+Output of the confusion matrix:
+
+> Confusion Matrix and Statistics
+> 
+>           Reference
+> Prediction    A    B    C    D    E
+> 
+         A 1673    1    0    0    0
+         B    0 1135   10    0    0
+         C    0    3 1015   21    0
+         D    0    0    1  942    3
+         E    1    0    0    1 1079
+> 
+> Overall Statistics
+>                                          
+               Accuracy : 0.993          
+                 95% CI : (0.9906, 0.995)
+    No Information Rate : 0.2845         
+    P-Value [Acc > NIR] : < 2.2e-16      
+>                                          
+>                   Kappa : 0.9912         
+>  Mcnemar's Test P-Value : NA             
+> 
+> Statistics by Class:
+>                      Class: A Class: B Class: C Class: D Class: E
+> 
+> Sensitivity            0.9994   0.9965   0.9893   0.9772   0.9972
+>  
+> Specificity            0.9998   0.9979   0.9951   0.9992   0.9996
+> 
+> Pos Pred Value         0.9994   0.9913   0.9769   0.9958   0.9981
+> 
+> Neg Pred Value         0.9998   0.9992   0.9977   0.9955   0.9994
+> 
+> Prevalence             0.2845   0.1935   0.1743   0.1638   0.1839
+> 
+> Detection Rate         0.2843   0.1929   0.1725   0.1601   0.1833
+> 
+> Detection Prevalence   0.2845   0.1946   0.1766   0.1607   0.1837
+> 
+> Balanced Accuracy      0.9996   0.9972   0.9922   0.9882   0.9984
+> 
